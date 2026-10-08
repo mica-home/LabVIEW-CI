@@ -17,9 +17,13 @@
  *   /<anything>/repos/{owner}/{repo}/releases/{id}/assets         GET (list), POST (upload, ?name=)
  *   /<anything>/repos/{owner}/{repo}/releases/{id}/assets/{aid}   DELETE
  *   /<anything>/repos/{owner}/{repo}/raw/{filepath}?ref={ref}     GET (raw file; Gitea API)
+ *   /<anything>/repos/{owner}/{repo}/contents/{filepath}?ref={ref} GET (file; GitHub contents API,
+ *                                                     raw bytes via Accept: application/vnd.github.raw)
  *   /__state                                                      GET (test introspection, not a real API)
  *
- * Raw file route (used by ci/runner/vm-bootstrap.ps1 Phase 3):
+ * Raw file route (used by ci/runner/vm-bootstrap.ps1 Phase 3; both the Gitea `raw` and the
+ * GitHub `contents` shape share it - the double ignores the Accept header, the bytes are
+ * identical either way):
  *   The requested filepath is mapped under --raw-dir (e.g. raw-dir=<d> + filepath
  *   "ci/bootstrap-deps.ps1" serves <d>/ci/bootstrap-deps.ps1) and returned byte-for-byte
  *   with Content-Type: application/octet-stream. A missing --raw-dir, a missing file, an
@@ -330,9 +334,12 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // GET /repos/{owner}/{repo}/raw/{filepath}?ref=...   (Gitea raw file API)
+  // GET /repos/{owner}/{repo}/raw/{filepath}?ref=...       (Gitea raw file API)
+  // GET /repos/{owner}/{repo}/contents/{filepath}?ref=...  (GitHub contents API; the client
+  //     sends Accept: application/vnd.github.raw for the file itself, which this double does
+  //     not need to distinguish - the bytes are served the same way)
   // Added for ci/runner/vm-bootstrap.ps1 Phase 3. The releases routes below are unchanged.
-  if (reposAt >= 0 && segs[reposAt + 3] === 'raw') {
+  if (reposAt >= 0 && (segs[reposAt + 3] === 'raw' || segs[reposAt + 3] === 'contents')) {
     let filePath = '';
     try {
       filePath = segs.slice(reposAt + 4).map(decodeURIComponent).join('/');
@@ -343,6 +350,7 @@ const server = http.createServer(async (req, res) => {
     const rawBase = {
       ...base,
       raw: true,
+      rawKind: segs[reposAt + 3], // 'raw' (Gitea) | 'contents' (GitHub contents API)
       rawPath: filePath,
       ref: url.searchParams.get('ref'),
       host: req.headers.host ?? null,

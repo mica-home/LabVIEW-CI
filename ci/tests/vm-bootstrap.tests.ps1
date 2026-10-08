@@ -17,7 +17,12 @@
       * Gitea raw API     -> fixtures/api-stub.mjs with --raw-dir (the real
                              ci/bootstrap-deps.ps1 is served under the kit slug and the real
                              Lab_Super.dragon under the MICA slug, so the Phase 3 child is
-                             the REAL script) and --raw-status 401/404
+                             the REAL script) and --raw-status 401/404; the same stub also
+                             answers the GitHub contents shape for the kit fetch
+      * GitHub kit fetch  -> the kit script is fetched through the GitHub contents API
+                             (default -KitForge github), pointed at the loopback stub with
+                             -KitApiBase and authenticated with -GitHubToken (a separate
+                             sentinel from the Gitea registration token)
       * VIPM              -> fixtures/vipm-stub (driven by the real bootstrap-deps.ps1)
 
     Nothing here touches gitea.sevenology.top, dl.gitea.com, a real VIPM, a real Node
@@ -30,9 +35,10 @@
                                and the manual-install checklist land in preflight.json
       T02 register-and-task    argv shape, config.yaml, .runner, SYSTEM/AtStartup task
                                verbs; the token sentinel appears in NO output and NO file
-      T03 phase3-raw-deps      kit and dragon fetched byte-identical from their own repos
-                               through the raw route and the real bootstrap-deps.ps1 invoked
-                               with the staged dragon
+      T03 phase3-raw-deps      kit fetched through the GitHub contents route and the dragon
+                               through the Gitea raw route, both byte-identical from their
+                               own repos, and the real bootstrap-deps.ps1 invoked with the
+                               staged dragon
       T04 idempotency-resume   second run skips both phases (1 register call, 2 fetches),
                                a missing phase marker resumes that phase, -Force redoes it
       T05 phase1-node          skip when >= 20; winget path + re-probe; winget failure ->
@@ -43,8 +49,8 @@
                                and a child that echoes the token: all red, cleanup verified
       T08 zero-external-calls  every request in the api-stub log went to 127.0.0.1
       T09 malformed-inputs     empty token / bad URL / capacity 0 / bad slug / bad ref /
-                               missing binary / zero timeout -> exit 2, nothing created,
-                               no HTTP request at all
+                               missing binary / zero timeout / missing GitHub token -> exit 2,
+                               nothing created, no HTTP request at all
       T10 manual-fallback      staged files + -SkipRunner (no token) run Phase 3 offline
       T11 spaced-paths         a runner root / stage dir containing spaces works end to end
 
@@ -82,6 +88,9 @@ $PwshExe = (Get-Command pwsh -ErrorAction Stop).Source
 $NodeExe = (Get-Command node -ErrorAction Stop).Source
 
 $Sentinel = 'SENTINEL-BOOTSTRAP-TOKEN'
+# Separate credential for the GitHub kit fetch (-GitHubToken): never the Gitea token, so a
+# mix-up between the two auth paths is visible in the api-stub's authSha256 proof.
+$GhSentinel = 'SENTINEL-BOOTSTRAP-GH-TOKEN'
 $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 
 Write-Host '== ci/runner/vm-bootstrap.ps1 tests =='
@@ -414,6 +423,11 @@ function Invoke-Bootstrap {
         [string]$LabViewPath = '',
         [string]$NiRoot = '',
         [string]$DepsScript = '',
+        # The GitHub kit fetch token. Defaults to the GH sentinel; an explicitly EMPTY value
+        # omits the argument entirely, which drives the "missing GitHub token" usage error.
+        [string]$GitHubToken = $GhSentinel,
+        # Base URL for the GitHub contents route; point it at the api-stub.
+        [string]$KitApiBase = '',
         [int]$Capacity = 0,
         [hashtable]$Env = @{},
         [string[]]$ExtraArgs = @(),
@@ -432,6 +446,8 @@ function Invoke-Bootstrap {
     if (-not [string]::IsNullOrWhiteSpace($LabViewPath)) { $argv += @('-LabViewPath', $LabViewPath) }
     if (-not [string]::IsNullOrWhiteSpace($NiRoot)) { $argv += @('-NiRoot', $NiRoot) }
     if (-not [string]::IsNullOrWhiteSpace($DepsScript)) { $argv += @('-DepsScript', $DepsScript) }
+    if (-not [string]::IsNullOrWhiteSpace($GitHubToken)) { $argv += @('-GitHubToken', $GitHubToken) }
+    if (-not [string]::IsNullOrWhiteSpace($KitApiBase)) { $argv += @('-KitApiBase', $KitApiBase) }
     if ($ExtraArgs.Count -gt 0) { $argv += $ExtraArgs }
 
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
@@ -444,7 +460,7 @@ function Invoke-Bootstrap {
     # Drop anything this suite must control explicitly, THEN apply the case's own values.
     # The suite never hands the token in through the environment unless a case asks for it:
     # the script under test must obtain it from -RegistrationToken (or its own prompt).
-    foreach ($stale in @('GITEA_RUNNER_REGISTRATION_TOKEN', 'STUB_ARGV_LOG', 'STUB_EXIT_CODE', 'STUB_CREATE_RUNNER',
+    foreach ($stale in @('GITEA_RUNNER_REGISTRATION_TOKEN', 'GITHUB_TOKEN', 'STUB_ARGV_LOG', 'STUB_EXIT_CODE', 'STUB_CREATE_RUNNER',
             'STUB_ECHO_TOKEN', 'STUB_ECHO_ENV_TOKEN', 'STUB_TASK_LOG', 'STUB_TASK_INSTALL_EXIT',
             'STUB_TASK_START_EXIT', 'STUB_TASK_STATUS_EXIT', 'STUB_LIST_FILE', 'STUB_INSTALL_OUTPUT_FILE',
             'STUB_SLEEP_SEC', 'STUB_SLEEP_SUBCOMMAND')) {
@@ -606,7 +622,7 @@ try {
     }
 
     # ------------------------------------------------------------------ T03 -----
-    Test-Case 'T03-phase3-raw-deps' 'raw route serves both files byte-identical; the real bootstrap-deps.ps1 runs against the staged dragon' {
+    Test-Case 'T03-phase3-raw-deps' 'kit via the GitHub contents route, dragon via the Gitea raw route, both byte-identical; the real bootstrap-deps.ps1 runs against the staged dragon' {
         $sandbox = New-Sandbox 't03'
         $stage = Join-Path $sandbox 'stage'
         $root = Join-Path $sandbox 'runner-root'
@@ -626,6 +642,7 @@ try {
             STUB_SLEEP_SUBCOMMAND  = ''
         }
         $r = Invoke-Bootstrap -Sandbox $sandbox -StageDir $stage -RunnerRoot $root -Instance $stub.Base `
+            -KitApiBase $stub.Base `
             -TaskBackend $taskStub.Script -VipmPath $VipmStubCmd -LabViewPath $deps.LabView -NiRoot $deps.NiRoot `
             -Env $env -ExtraArgs @('-SkipNode', '-SkipRunner')
         Assert-Equal 0 $r.ExitCode ("Phase 3 run must exit 0; output:`n" + (Sanitize-Output $r.Output))
@@ -645,12 +662,16 @@ try {
         Assert-Equal 2 $raw.Count 'exactly two raw file requests expected'
         Assert-Equal 'ci/bootstrap-deps.ps1' $raw[0].rawPath 'the first fetch must be the dependency script'
         Assert-Equal 'Lab_Super.dragon' $raw[1].rawPath 'the second fetch must be the dragon file'
-        Assert-Equal '/api/v1/repos/MICA/LabVIEW-CI/raw/ci/bootstrap-deps.ps1' $raw[0].path 'the dependency script must come from the kit repository'
-        Assert-Equal '/api/v1/repos/MICA/MICA/raw/Lab_Super.dragon' $raw[1].path 'the dragon must come from the MICA repository'
+        Assert-Equal 'contents' $raw[0].rawKind 'the kit fetch must use the GitHub contents API shape'
+        Assert-Equal '/repos/mica-home/LabVIEW-CI/contents/ci/bootstrap-deps.ps1' $raw[0].path 'the dependency script must come from the kit repository via the GitHub contents route'
+        Assert-Equal '/api/v1/repos/MICA/MICA/raw/Lab_Super.dragon' $raw[1].path 'the dragon must come from the MICA repository via the Gitea raw route'
         Assert-Equal 'main' $raw[0].ref 'the kit fetch must carry the kit ref (-KitRef)'
         Assert-Equal 'dev' $raw[1].ref 'the dragon fetch must keep the MICA ref (-Ref)'
-        Assert-Equal 'token' $raw[0].auth 'the fetch must authenticate with a token scheme'
-        Assert-Equal $SentinelSha $raw[0].authSha256 'the fetch must use the same in-memory token (hash proof)'
+        Assert-Equal 'application/vnd.github.raw' $raw[0].accept 'the kit fetch must ask for the raw file via the GitHub media type'
+        Assert-Equal 'Bearer' $raw[0].auth 'the kit fetch must authenticate with the Bearer scheme (GitHub)'
+        Assert-Equal (Get-StringSha256 -Text $GhSentinel) $raw[0].authSha256 'the kit fetch must use the dedicated GitHub token, not the registration token (hash proof)'
+        Assert-Equal 'token' $raw[1].auth 'the dragon fetch must authenticate with the Gitea token scheme'
+        Assert-Equal $SentinelSha $raw[1].authSha256 'the dragon fetch must use the registration token (hash proof)'
 
         $install = @(Get-Lines -Path $deps.ArgvLog -Pattern 'argv: install ')
         Assert-Equal 1 $install.Count 'bootstrap-deps.ps1 must have invoked vipm install exactly once'
@@ -694,6 +715,7 @@ try {
         }
         $common = @{
             Sandbox = $sandbox; StageDir = $stage; RunnerRoot = $root; Instance = $stub.Base
+            KitApiBase = $stub.Base
             TaskBackend = $taskStub.Script; VipmPath = $VipmStubCmd; LabViewPath = $deps.LabView
             NiRoot = $deps.NiRoot; RunnerBinary = $RunnerStubCmd; Env = $env
         }
@@ -792,7 +814,7 @@ try {
         foreach ($variant in @(
                 [pscustomobject]@{ Tag = 't06-401'; Status = 401; Hang = ''; Expect = '401'; Extra = @() },
                 [pscustomobject]@{ Tag = 't06-404'; Status = 404; Hang = ''; Expect = '404'; Extra = @() },
-                [pscustomobject]@{ Tag = 't06-hang'; Status = 0; Hang = 'GET /api/v1/repos/MICA/LabVIEW-CI/raw/ci/bootstrap-deps.ps1'; Expect = 'fetch failed'; Extra = @('-DownloadTimeoutSec', '3') }
+                [pscustomobject]@{ Tag = 't06-hang'; Status = 0; Hang = 'GET /repos/mica-home/LabVIEW-CI/contents/ci/bootstrap-deps.ps1'; Expect = 'fetch failed'; Extra = @('-DownloadTimeoutSec', '3') }
             )) {
             $sandbox = New-Sandbox $variant.Tag
             $stage = Join-Path $sandbox 'stage'
@@ -803,6 +825,7 @@ try {
             $env = @{ STUB_TASK_LOG = $taskStub.Log; STUB_ARGV_LOG = $deps.ArgvLog; STUB_LIST_FILE = $deps.ListFile }
             $extra = @('-SkipNode', '-SkipRunner') + $variant.Extra
             $r = Invoke-Bootstrap -Sandbox $sandbox -StageDir $stage -RunnerRoot $root -Instance $stub.Base `
+                -KitApiBase $stub.Base `
                 -TaskBackend $taskStub.Script -VipmPath $VipmStubCmd -LabViewPath $deps.LabView -NiRoot $deps.NiRoot `
                 -Env $env -ExtraArgs $extra
             Assert-Equal 3 $r.ExitCode ("raw failure '" + $variant.Tag + "' must exit 3; output:`n" + (Sanitize-Output $r.Output))
@@ -921,6 +944,7 @@ try {
             STUB_LIST_FILE = $deps.ListFile; STUB_INSTALL_OUTPUT_FILE = ''; STUB_SLEEP_SEC = '0'; STUB_SLEEP_SUBCOMMAND = ''
         }
         $r = Invoke-Bootstrap -Sandbox $sandbox -StageDir $stage -RunnerRoot $root -Instance $stub.Base `
+            -KitApiBase $stub.Base `
             -RunnerBinary $RunnerStubCmd -TaskBackend $taskStub.Script -VipmPath $VipmStubCmd `
             -LabViewPath $deps.LabView -NiRoot $deps.NiRoot -Env $env -ExtraArgs @('-SkipNode')
         Assert-Equal 0 $r.ExitCode ("the loopback run must exit 0; output:`n" + (Sanitize-Output $r.Output))
@@ -943,7 +967,7 @@ try {
     }
 
     # ------------------------------------------------------------------ T09 -----
-    Test-Case 'T09-malformed-inputs' 'empty token / bad URL / capacity 0 / bad slug / bad ref / missing binary / zero timeout -> exit 2, nothing created, no request' {
+    Test-Case 'T09-malformed-inputs' 'empty token / bad URL / capacity 0 / bad slug / bad ref / missing binary / zero timeout / missing GitHub token -> exit 2, nothing created, no request' {
         $variants = @(
             [pscustomobject]@{ Tag = 'no-token'; ProvideToken = $false; Instance = ''; RepoSlug = ''; Ref = ''; Capacity = 0; RunnerBinary = ''; Extra = @(); Expect = 'token' },
             [pscustomobject]@{ Tag = 'bad-url'; ProvideToken = $true; Instance = 'ftp://gitea.sevenology.top'; RepoSlug = ''; Ref = ''; Capacity = 0; RunnerBinary = ''; Extra = @(); Expect = 'ftp' },
@@ -951,7 +975,8 @@ try {
             [pscustomobject]@{ Tag = 'bad-slug'; ProvideToken = $true; Instance = ''; RepoSlug = 'not-a-slug'; Ref = ''; Capacity = 0; RunnerBinary = ''; Extra = @(); Expect = 'not-a-slug' },
             [pscustomobject]@{ Tag = 'bad-ref'; ProvideToken = $true; Instance = ''; RepoSlug = ''; Ref = 'dev branch'; Capacity = 0; RunnerBinary = ''; Extra = @(); Expect = 'dev branch' },
             [pscustomobject]@{ Tag = 'missing-binary'; ProvideToken = $true; Instance = ''; RepoSlug = ''; Ref = ''; Capacity = 0; RunnerBinary = 'C:\does-not-exist\gitea-runner.exe'; Extra = @(); Expect = 'does-not-exist' },
-            [pscustomobject]@{ Tag = 'zero-timeout'; ProvideToken = $true; Instance = ''; RepoSlug = ''; Ref = ''; Capacity = 0; RunnerBinary = ''; Extra = @('-DownloadTimeoutSec', '0'); Expect = 'DownloadTimeoutSec' }
+            [pscustomobject]@{ Tag = 'zero-timeout'; ProvideToken = $true; Instance = ''; RepoSlug = ''; Ref = ''; Capacity = 0; RunnerBinary = ''; Extra = @('-DownloadTimeoutSec', '0'); Expect = 'DownloadTimeoutSec' },
+            [pscustomobject]@{ Tag = 'no-gh-token'; ProvideToken = $true; Instance = ''; RepoSlug = ''; Ref = ''; Capacity = 0; RunnerBinary = ''; Extra = @(); Expect = 'GitHub token' }
         )
         foreach ($v in $variants) {
             $sandbox = New-Sandbox ('t09-' + $v.Tag)
@@ -964,6 +989,7 @@ try {
             $call = @{
                 Sandbox = $sandbox; StageDir = $stage; RunnerRoot = $root; ProvideToken = $v.ProvideToken
                 TaskBackend = $taskStub.Script; Env = $env; ExtraArgs = $v.Extra
+                GitHubToken = $(if ($v.Tag -eq 'no-gh-token') { '' } else { $GhSentinel })
                 Instance = $(if ([string]::IsNullOrWhiteSpace($v.Instance)) { $stub.Base } else { $v.Instance })
                 RepoSlug = $(if ([string]::IsNullOrWhiteSpace($v.RepoSlug)) { 'MICA/MICA' } else { $v.RepoSlug })
                 Ref = $(if ([string]::IsNullOrWhiteSpace($v.Ref)) { 'dev' } else { $v.Ref })
@@ -1030,6 +1056,7 @@ try {
             STUB_LIST_FILE = $deps.ListFile; STUB_INSTALL_OUTPUT_FILE = ''; STUB_SLEEP_SEC = '0'; STUB_SLEEP_SUBCOMMAND = ''
         }
         $r = Invoke-Bootstrap -Sandbox $sandbox -StageDir $stage -RunnerRoot $root -Instance $stub.Base `
+            -KitApiBase $stub.Base `
             -RunnerBinary $RunnerStubCmd -TaskBackend $taskStub.Script -VipmPath $VipmStubCmd `
             -LabViewPath $deps.LabView -NiRoot $deps.NiRoot -Env $env -ExtraArgs @('-SkipNode')
         Assert-Equal 0 $r.ExitCode ("spaced paths must work end to end; output:`n" + (Sanitize-Output $r.Output))

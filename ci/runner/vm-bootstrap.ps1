@@ -27,13 +27,16 @@
                passed to the runner ONLY through the environment variable
                GITEA_RUNNER_REGISTRATION_TOKEN: never on the command line, never written to
                a file, never echoed (every child output line is redacted first).
-      Phase 3  dependencies. Fetch ci/bootstrap-deps.ps1 from the kit repository (this one:
-               -KitRepoSlug/-KitRef) and Lab_Super.dragon from the MICA repository
-               (-RepoSlug/-Ref) through the Gitea raw API with the same in-memory token into
-               <StageDir>, then run bootstrap-deps.ps1 -DragonFile <StageDir>\Lab_Super.dragon
-               with the operator parameters passed through. The four NI runtimes are installed
-               by hand per the Phase 0 checklist, so the child runs with -SkipNipm unless
-               -WithNipm is given.
+      Phase 3  dependencies. Fetch ci/bootstrap-deps.ps1 from the kit's home on GitHub (this
+               repository: mica-home/LabVIEW-CI@main - -KitRepoSlug/-KitRef) through the
+               GitHub contents API (Accept: application/vnd.github.raw) with a GitHub token
+               (-GitHubToken or env GITHUB_TOKEN; -KitForge gitea switches back to the legacy
+               Gitea raw route), and Lab_Super.dragon from the MICA repository
+               (-RepoSlug/-Ref) through the Gitea raw API with the runner registration token,
+               into <StageDir>, then run bootstrap-deps.ps1 -DragonFile
+               <StageDir>\Lab_Super.dragon with the operator parameters passed through. The
+               four NI runtimes are installed by hand per the Phase 0 checklist, so the child
+               runs with -SkipNipm unless -WithNipm is given.
 
     Idempotency / resumability:
       * every phase writes a marker in <StageDir> (.phase1-node.done, .phase2-runner.done,
@@ -51,11 +54,13 @@
 
     Exit codes:
       0  every active phase finished
-      2  usage/config error: bad -InstanceUrl/-RepoSlug/-Ref/-KitRepoSlug/-KitRef/-Name/-Labels/-Capacity/-RunnerRoot
+      2  usage/config error: bad -InstanceUrl/-RepoSlug/-Ref/-KitForge/-KitApiBase/-KitRepoSlug/-KitRef/-Name/-Labels/-Capacity/-RunnerRoot
          (or a path inside a git repository), missing -RunnerBinaryPath, bad timeout value,
-         or a required registration token that could not be obtained
-      3  Phase 3: the raw files could not be fetched (401 = token rejected, 404 = wrong
-         repo/ref/path, or a network/timeout failure). The manual fallback is printed.
+         a required registration token that could not be obtained, or a missing GitHub
+         token for the github kit fetch
+      3  Phase 3: the kit file (GitHub contents API) or the dragon file (Gitea raw API)
+         could not be fetched (401 = token rejected, 404 = wrong repo/ref/path or no token
+         for a private repo, or a network/timeout failure). The manual fallback is printed.
       4  Phase 2: the gitea-runner binary could not be obtained (download failure)
       5  Phase 2: registration or autostart failed (half-products cleaned up)
       6  Phase 1: Node >= 20 is missing and winget could not install it
@@ -73,6 +78,8 @@
       -TaskBackend       PowerShell script implementing the scheduled-task verbs
                          install/start/status/uninstall (default: Windows Task Scheduler)
       -DepsScript        run this local bootstrap-deps.ps1 instead of the fetched copy
+      -KitApiBase        base URL of the GitHub API for the kit fetch
+                         (default: https://api.github.com; tests point it at a loopback stub)
 
     Runbook: docs/vm-runner.md section 7.0 ("one-shot bootstrap").
 
@@ -95,10 +102,14 @@ param(
     [string]$RepoSlug = 'MICA/MICA',
     [string]$Ref = 'dev',
 
-    # Source of the kit file itself (ci/bootstrap-deps.ps1): this repository, so the kit can
-    # be provisioned from its own home. -RepoSlug/-Ref stay the MICA source of the dragon
-    # file; the runner registration target is still -RepoSlug/-Ref.
-    [string]$KitRepoSlug = 'MICA/LabVIEW-CI',
+    # Source of the kit file itself (ci/bootstrap-deps.ps1): the kit's home on GitHub (this
+    # repository), fetched through the GitHub contents API at -KitApiBase. -KitForge gitea
+    # switches back to the legacy Gitea raw route through -InstanceUrl (for a Gitea mirror
+    # of the kit). -RepoSlug/-Ref stay the MICA source of the dragon file; the runner
+    # registration target is still -RepoSlug/-Ref.
+    [string]$KitForge = 'github',
+    [string]$KitApiBase = 'https://api.github.com',
+    [string]$KitRepoSlug = 'mica-home/LabVIEW-CI',
     [string]$KitRef = 'main',
 
     [string]$RunnerRoot = 'D:\gitea-runner',
@@ -107,6 +118,10 @@ param(
     [string]$Labels = 'windows-labview26:host',
     [int]$Capacity = 1,
     [string]$RegistrationToken = '',
+    # GitHub token for the github kit fetch (-KitForge github): -GitHubToken, else the
+    # GITHUB_TOKEN environment variable. Travels only in the Authorization header; without
+    # it a private repository answers 401 (rejected token) / 404 (no token).
+    [string]$GitHubToken = '',
     [string]$RunnerBinaryPath = '',
     [string]$RunnerVersion = 'latest',
 
@@ -192,7 +207,8 @@ function Stop-Usage {
     Write-Host ''
     Write-Host 'usage:'
     Write-Host '  pwsh -File ci/runner/vm-bootstrap.ps1 [-InstanceUrl <url>] [-RepoSlug <owner/repo>] [-Ref <branch|tag>]'
-    Write-Host '       [-KitRepoSlug <owner/repo>] [-KitRef <branch|tag>]   (source of ci/bootstrap-deps.ps1; default MICA/LabVIEW-CI@main)'
+    Write-Host '       [-KitForge github|gitea] [-KitRepoSlug <owner/repo>] [-KitRef <branch|tag>]   (kit source; default github mica-home/LabVIEW-CI@main)'
+    Write-Host '       [-GitHubToken <t> | env GITHUB_TOKEN]   (github kit fetch; a private repository answers 401/404 without it)'
     Write-Host '       [-RunnerRoot <dir>] [-StageDir <dir>] [-Name <runner name>] [-Labels <l>] [-Capacity <n>]'
     Write-Host '       [-RegistrationToken <t> | env GITEA_RUNNER_REGISTRATION_TOKEN | interactive prompt]'
     Write-Host '       [-RunnerBinaryPath <local gitea-runner>] [-SkipNode] [-SkipRunner] [-SkipDeps] [-Force]'
@@ -651,7 +667,20 @@ if ($RepoSlug -notmatch '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') {
     Stop-Usage ('invalid -RepoSlug: "' + $RepoSlug + '". Expected owner/repo form, e.g. MICA/MICA.')
 }
 if ($KitRepoSlug -notmatch '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') {
-    Stop-Usage ('invalid -KitRepoSlug: "' + $KitRepoSlug + '". Expected owner/repo form, e.g. MICA/LabVIEW-CI.')
+    Stop-Usage ('invalid -KitRepoSlug: "' + $KitRepoSlug + '". Expected owner/repo form, e.g. mica-home/LabVIEW-CI.')
+}
+if ($KitForge -notin @('github', 'gitea')) {
+    Stop-Usage ('invalid -KitForge: "' + $KitForge + '". Expected "github" or "gitea".') @(
+        'github (default): the kit file comes from the GitHub contents API (-KitApiBase, -KitRepoSlug/-KitRef) with -GitHubToken / env GITHUB_TOKEN.',
+        'gitea (legacy): the kit file comes from the raw API of -InstanceUrl (for a Gitea mirror of the kit).'
+    )
+}
+$KitApiBaseNormalized = $KitApiBase.TrimEnd('/')
+$parsedKitUri = $null
+if (-not [Uri]::TryCreate($KitApiBaseNormalized, [UriKind]::Absolute, [ref]$parsedKitUri) -or
+    ($parsedKitUri.Scheme -ne 'http' -and $parsedKitUri.Scheme -ne 'https') -or
+    [string]::IsNullOrWhiteSpace($parsedKitUri.Host)) {
+    Stop-Usage ('invalid -KitApiBase: "' + $KitApiBase + '". An absolute http(s) base URL is required, e.g. https://api.github.com.')
 }
 if ([string]::IsNullOrWhiteSpace($Ref) -or $Ref -match '[\s?#]') {
     Stop-Usage ('invalid -Ref: "' + $Ref + '". Expected a branch or tag name (no whitespace, ?, #).')
@@ -743,6 +772,26 @@ if ($needToken -and [string]::IsNullOrWhiteSpace($token)) {
 if (-not [string]::IsNullOrWhiteSpace($token)) { $token = $token.Trim() }
 if ($needToken -and [string]::IsNullOrWhiteSpace($token)) { Stop-Usage 'registration token is empty.' }
 
+# The github kit fetch authenticates with its own token: -GitHubToken, else the GITHUB_TOKEN
+# environment variable. A private repository answers 401 (rejected token) / 404 (no token)
+# to the contents request, so the requirement is checked up front instead of failing Phase 3.
+$ghToken = $GitHubToken
+$ghTokenSource = '-GitHubToken'
+if ([string]::IsNullOrWhiteSpace($ghToken)) {
+    $ghToken = [Environment]::GetEnvironmentVariable('GITHUB_TOKEN', 'Process')
+    $ghTokenSource = 'environment variable GITHUB_TOKEN'
+}
+if (-not [string]::IsNullOrWhiteSpace($ghToken)) { $ghToken = $ghToken.Trim() }
+$needGhToken = $depsWillFetch -and ($KitForge -eq 'github')
+if ($needGhToken -and [string]::IsNullOrWhiteSpace($ghToken)) {
+    Stop-Usage ('missing GitHub token (-GitHubToken or env GITHUB_TOKEN): the kit fetch from ' + $KitRepoSlug + ' would fail with 401/404 (private repository).') @(
+        'create a fine-grained PAT with read access to ' + $KitRepoSlug + ' (or a classic PAT with the repo scope), then:',
+        '  $env:GITHUB_TOKEN = (Read-Host -Prompt ''token'' -MaskInput)',
+        '  pwsh -File ci/runner/vm-bootstrap.ps1',
+        'or fetch nothing: pre-stage the files in -StageDir (documented manual fallback) or pass -DepsScript.'
+    )
+}
+
 # --- plan summary ------------------------------------------------------------------
 
 $skipNodePhase = $SkipNode
@@ -750,7 +799,7 @@ $skipRunnerPhase = $SkipRunner
 $skipDepsPhase = $SkipDeps
 
 Write-Log ('instance      : ' + $InstanceUrlNormalized + ' (repo ' + $RepoSlug + ', ref ' + $Ref + ')')
-Write-Log ('kit source    : ' + $KitRepoSlug + ' (ref ' + $KitRef + ') for ci/bootstrap-deps.ps1; dragon from ' + $RepoSlug + ' (ref ' + $Ref + ')')
+Write-Log ('kit source    : ' + $KitForge + ' ' + $KitRepoSlug + ' (ref ' + $KitRef + ')' + $(if ($KitForge -eq 'github') { ' via ' + $KitApiBaseNormalized } else { ' (legacy raw route via -InstanceUrl)' }) + ' for ci/bootstrap-deps.ps1; dragon from ' + $RepoSlug + ' (ref ' + $Ref + ')')
 Write-Log ('runner root  : ' + $RunnerRootFull)
 Write-Log ('stage dir    : ' + $StageDirFull)
 Write-Log ('runner name  : ' + $Name)
@@ -758,6 +807,7 @@ Write-Log ('labels        : ' + ($labelList -join ','))
 Write-Log ('capacity     : ' + $Capacity)
 Write-Log ('scheduled task: ' + $TaskName + ' (at-boot trigger, principal ' + $TaskUserId + ')')
 Write-Log ('token        : ' + $(if ($needToken) { 'ready (source: ' + $tokenSource + '; never echoed, never written to disk)' } else { 'not needed this run (nothing to register or download)' }))
+Write-Log ('github token : ' + $(if ($needGhToken) { 'ready (source: ' + $ghTokenSource + '; never echoed, never written to disk)' } else { 'not needed this run (no github kit fetch)' }))
 Write-Log ('timeout budgets (s): winget=' + $WingetTimeoutSec + ' download=' + $DownloadTimeoutSec + ' register=' + $RegisterTimeoutSec + ' start-verify=' + $StartVerifyTimeoutSec + ' deps=' + $DepsTimeoutSec)
 Write-Log ('phases       : Phase0 precheck (always)' + $(if ($skipNodePhase) { ' | Phase1 skipped via -SkipNode' } else { ' | Phase1 Node' }) + $(if ($skipRunnerPhase) { ' | Phase2 skipped via -SkipRunner' } else { ' | Phase2 runner' }) + $(if ($skipDepsPhase) { ' | Phase3 skipped via -SkipDeps' } else { ' | Phase3 deps' }))
 Write-Log ('force redo   : ' + [bool]$Force)
@@ -809,7 +859,7 @@ $manualItems.Add([pscustomobject]@{
         item         = 'VIPM (JKI VI Package Manager, community edition is fine)'
         expectedPath = 'C:\Program Files\JKI\VI Package Manager\support\vipm.exe'
         present      = $vipmPresent
-        why          = 'Phase 3 uses it to install the 18 VIPM dependencies'
+        why          = 'Phase 3 uses it to install the 20 VIPM dependencies'
     })
 
 $preflight = [ordered]@{
@@ -838,6 +888,8 @@ $preflight = [ordered]@{
         ref           = $Ref
         kitRepoSlug   = $KitRepoSlug
         kitRef        = $KitRef
+        kitForge      = $KitForge
+        kitApiBase    = $KitApiBaseNormalized
         runnerRoot    = $RunnerRootFull
         stageDir      = $StageDirFull
         runnerName    = $Name
@@ -852,6 +904,8 @@ $preflight = [ordered]@{
         force         = [bool]$Force
         tokenRequired = $needToken
         tokenSource   = $(if ($needToken) { $tokenSource } else { '(not needed this run)' })
+        ghTokenRequired = $needGhToken
+        ghTokenSource   = $(if ($needGhToken) { $ghTokenSource } else { '(not needed this run)' })
     }
     timeouts    = [ordered]@{
         wingetSec          = $WingetTimeoutSec
@@ -1242,17 +1296,26 @@ else {
     }
     elseif ($Force -or -not ((Test-Path -LiteralPath $depsScriptPath -PathType Leaf) -and (Test-Path -LiteralPath $dragonPath -PathType Leaf))) {
         $rawFiles = @(
-            [pscustomobject]@{ RepoPath = 'ci/bootstrap-deps.ps1'; Dest = $depsScriptPath; RepoSlug = $KitRepoSlug; Ref = $KitRef; SourceHint = '-KitRepoSlug/-KitRef' },
-            [pscustomobject]@{ RepoPath = 'Lab_Super.dragon'; Dest = $dragonPath; RepoSlug = $RepoSlug; Ref = $Ref; SourceHint = '-RepoSlug/-Ref' }
+            [pscustomobject]@{ RepoPath = 'ci/bootstrap-deps.ps1'; Dest = $depsScriptPath; RepoSlug = $KitRepoSlug; Ref = $KitRef; SourceHint = '-KitRepoSlug/-KitRef'; Forge = $KitForge },
+            [pscustomobject]@{ RepoPath = 'Lab_Super.dragon'; Dest = $dragonPath; RepoSlug = $RepoSlug; Ref = $Ref; SourceHint = '-RepoSlug/-Ref'; Forge = 'gitea' }
         )
         if ($Force) { Write-Log '-Force: ignoring files already in the stage dir; downloading again.' }
-        Write-Log ('fetching files from the Gitea raw API (timeout budget ' + $DownloadTimeoutSec + ' s per file; the token travels only in the Authorization header):')
+        Write-Log ('fetching files (timeout budget ' + $DownloadTimeoutSec + ' s per file; the tokens travel only in the Authorization headers):')
         foreach ($f in $rawFiles) {
-            $url = $InstanceUrlNormalized + '/api/v1/repos/' + $f.RepoSlug + '/raw/' + $f.RepoPath + '?ref=' + [Uri]::EscapeDataString($f.Ref)
-            Write-Log ('  GET ' + $url)
+            if ($f.Forge -eq 'github') {
+                # GitHub contents API, asked for the raw file itself. The token goes in the
+                # Authorization header only - never on the command line, never into a file.
+                $url = $KitApiBaseNormalized + '/repos/' + $f.RepoSlug + '/contents/' + $f.RepoPath + '?ref=' + [Uri]::EscapeDataString($f.Ref)
+                $headers = @{ Accept = 'application/vnd.github.raw'; Authorization = 'Bearer ' + $ghToken }
+            }
+            else {
+                $url = $InstanceUrlNormalized + '/api/v1/repos/' + $f.RepoSlug + '/raw/' + $f.RepoPath + '?ref=' + [Uri]::EscapeDataString($f.Ref)
+                $headers = @{ Authorization = 'token ' + $token }
+            }
+            Write-Log ('  GET [' + $f.Forge + '] ' + $url)
             $status = 0
             try {
-                Invoke-WebRequest -Uri $url -Headers @{ Authorization = 'token ' + $token } -OutFile $f.Dest -TimeoutSec $DownloadTimeoutSec -MaximumRedirection 5
+                Invoke-WebRequest -Uri $url -Headers $headers -OutFile $f.Dest -TimeoutSec $DownloadTimeoutSec -MaximumRedirection 5
             }
             catch {
                 try { $status = [int]$_.Exception.Response.StatusCode } catch { $status = 0 }
@@ -1261,14 +1324,17 @@ else {
                 if ($status -eq 401) { $why = 'HTTP 401: token invalid, expired, or not valid for this repo' }
                 elseif ($status -eq 404) { $why = 'HTTP 404: repo/ref/path does not exist (check ' + $f.SourceHint + ' for ' + $f.RepoPath + ')' }
                 elseif ($status -gt 0) { $why = 'HTTP ' + $status }
+                if ($f.Forge -eq 'github') {
+                    $why += ' (a private GitHub repository answers 401 to a rejected token and 404 with no token or a wrong path)'
+                }
                 Write-Err ('fetch failed: ' + $f.RepoPath + ' -> ' + $why + ' (' + $_.Exception.Message + ')')
                 Write-Hint @(
                     'manual fallback (recommended, no new token needed):',
                     '  1) on a machine that can reach both repositories, copy these files into ' + $StageDirFull + '\ (keep the file names):',
-                    '       ci/bootstrap-deps.ps1   <- ' + $KitRepoSlug + ' (ref ' + $KitRef + ')',
-                    '       Lab_Super.dragon        <- ' + $RepoSlug + ' (ref ' + $Ref + ')',
+                    '       ci/bootstrap-deps.ps1   <- ' + $KitRepoSlug + ' (' + $(if ($KitForge -eq 'github') { 'GitHub' } else { 'Gitea' }) + ', ref ' + $KitRef + ')',
+                    '       Lab_Super.dragon        <- ' + $RepoSlug + ' (Gitea, ref ' + $Ref + ')',
                     '  2) rerun: pwsh -File vm-bootstrap.ps1 -SkipRunner   (the registered runner is skipped idempotently; Phase 3 uses the local files directly)',
-                    'or: retry with a valid token / corrected -InstanceUrl and repository/ref parameters.'
+                    'or: retry with a valid token / corrected kit, repository and ref parameters.'
                 )
                 exit $ExitFetch
             }
@@ -1299,7 +1365,7 @@ else {
     if ($depsResult.TimedOut) {
         Write-Err ('dependency bootstrap did not finish within ' + $depsResult.BudgetSec + ' s (timeout budget -DepsTimeoutSec); process tree killed.')
         Write-Hint @(
-            'VIPM installing 18 packages on a cold VM can take a long time: verify network/VIPM login, then rerun with a larger -DepsTimeoutSec.',
+            'VIPM installing 20 packages on a cold VM can take a long time: verify network/VIPM login, then rerun with a larger -DepsTimeoutSec.',
             'the install is idempotent and reruns converge; -VerifyOnly does a read-only reconciliation.'
         )
         exit $ExitDeps
