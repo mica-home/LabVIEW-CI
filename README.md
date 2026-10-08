@@ -5,6 +5,10 @@ project. It was extracted from the MICA repository so that runner provisioning i
 as its own project: MICA keeps only the files its pipelines need, and everything about
 building, registering and feeding a Windows build VM lives here.
 
+This repository's home is **`mica-home/LabVIEW-CI` on GitHub (private)**; it has no Gitea
+mirror today. The runner it provisions is still a Gitea Actions runner for the MICA
+instance - the two live on different forges by design.
+
 ## Layout
 
 | Path | Purpose |
@@ -48,13 +52,16 @@ The runner is provisioned out of band, before any MICA workflow runs: MICA's wor
 assume a runner that is already installed, registered and equipped, and the bootstrap is
 not executed from inside a MICA workflow.
 
-`vm-bootstrap.ps1` Phase 3 fetches the files it needs through the Gitea raw API with the
-same in-memory registration token, each from its own home: `ci/bootstrap-deps.ps1` from
-this repository (`MICA/LabVIEW-CI`, ref `main` - `-KitRepoSlug`/`-KitRef`) and
-`Lab_Super.dragon` from the MICA repository (`MICA/MICA`, ref `dev` - `-RepoSlug`/`-Ref`,
-which also remain the runner registration target). When the raw fetch is not possible, the
-manual fallback is printed: copy both files into the stage directory and re-run with
-`-SkipRunner`.
+`vm-bootstrap.ps1` Phase 3 fetches each file from its own home: `ci/bootstrap-deps.ps1`
+from this repository through the **GitHub contents API** (`mica-home/LabVIEW-CI`, ref
+`main` - `-KitRepoSlug`/`-KitRef`, `-KitForge github` is the default) authenticated with a
+GitHub token (`-GitHubToken` or env `GITHUB_TOKEN` - a private repository answers 401/404
+without one), and `Lab_Super.dragon` from the MICA repository (`MICA/MICA`, ref `dev` -
+`-RepoSlug`/`-Ref`, which also remain the runner registration target) through the **Gitea
+raw API** with the runner registration token. `-KitForge gitea` switches the kit fetch back
+to the legacy Gitea raw route (for a future Gitea mirror of this kit). When a fetch is not
+possible, the manual fallback is printed: copy both files into the stage directory and
+re-run with `-SkipRunner`.
 
 ## Credentials
 
@@ -62,6 +69,14 @@ manual fallback is printed: copy both files into the stage directory and re-run 
 `.gitignore`). `ci/vm.env.example` documents the keys. Registration tokens are passed to
 the runner through the environment and are never echoed or written to disk by these
 scripts.
+
+The kit fetch needs its own GitHub credential because `mica-home/LabVIEW-CI` is private:
+a fine-grained PAT with read access to that repository (or a classic PAT with the `repo`
+scope), supplied as `-GitHubToken` or the `GITHUB_TOKEN` environment variable. It travels
+only in the `Authorization: Bearer` header of the contents request; without it the script
+refuses up front (usage error, exit 2) instead of failing Phase 3 with a 401/404. The
+`GITEA_RUNNER_REGISTRATION_TOKEN` and `GITHUB_TOKEN` are separate credentials for separate
+forges and are not interchangeable.
 
 ## Tests
 
@@ -77,5 +92,5 @@ pwsh -NoProfile -File ci/tests/setup-runner.tests.ps1
 `ci/tests/fixtures/vipm-stub/`, `ci/tests/fixtures/runner-stub/` and
 `ci/tests/fixtures/api-stub.mjs` are the stand-ins. `vm-bootstrap.ps1` exposes test
 seams (`-RunnerBinaryPath`, `-NodeCommand`, `-WingetCommand`, `-TaskBackend`,
-`-DepsScript`) so the suites can run unattended; see `docs/vm-runner.md` for manual QA
-that needs a real VM.
+`-DepsScript`, `-KitApiBase`) so the suites can run unattended; see `docs/vm-runner.md`
+for manual QA that needs a real VM.
