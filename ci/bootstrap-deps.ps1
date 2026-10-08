@@ -4,7 +4,7 @@
     One-shot bootstrap (and proof) of the MICA build VM's VIPM dependencies - Lane 3.
 
 .DESCRIPTION
-    This is the executable form of docs/vm-runner.md section 5 ("18 VIPM dependencies"):
+    This is the executable form of docs/vm-runner.md section 5 ("20 VIPM dependencies"):
     install the VIPM packages declared in Lab_Super.dragon, then ASSERT that every one of
     them really is installed. The assertion is the point of the script - "installed half
     of the dependencies and assumed the rest went fine" must not be able to pass.
@@ -47,7 +47,7 @@
 
     Platform: Windows only (VIPM is a Windows application).
     Runbook: docs/vm-runner.md section 5.5. Manual QA (needs a real VM, takes tens of
-    minutes because it installs 18 real packages) is recorded in the task results.
+    minutes because it installs 20 real packages) is recorded in the task results.
 
 .EXAMPLE
     # VM, repository default paths (the documented one-liner):
@@ -97,7 +97,7 @@ param(
     # convention already used by ci/release-local.ps1 and ci/runner/*.
     [string]$VipmSafeRemote = 'https://gitea.sevenology.top/MICA/MICA_instrument.git',
 
-    # Passed to the CLI as --timeout <sec> for the install (18 packages can take tens of
+    # Passed to the CLI as --timeout <sec> for the install (20 packages can take tens of
     # minutes on a cold VM) and for the read-only list call.
     [int]$InstallTimeoutSec = 3600,
     [int]$ListTimeoutSec = 120,
@@ -593,7 +593,7 @@ else {
         Stop-Bootstrap -Code $ExitInstall -Message ('vipm install did not return within ' + $installResult.BudgetSec + 's (' + $InstallTimeoutSec + 's --timeout + ' + $WatchdogGraceSec + 's watchdog) - the process tree was killed') -Hint @(
             'the VM may be offline/behind a proxy, or VIPM may be waiting on a login/feed:',
             'open VIPM once by hand, sign in, confirm it can reach vipm.io, then re-run this script.',
-            'a slow first install of 18 packages on a cold VM can exceed the default budget:',
+            'a slow first install of 20 packages on a cold VM can exceed the default budget:',
             're-run with a larger -InstallTimeoutSec (e.g. -InstallTimeoutSec 7200).',
             'installing is idempotent, so re-running after a partial install converges.'
         )
@@ -663,7 +663,7 @@ foreach ($id in $dependencies.Keys) {
 if ($missing.Count -gt 0) {
     if ($null -ne $installResult -and -not [string]::IsNullOrWhiteSpace($installResult.StdOut)) {
         # Show what the install step claimed next to what the machine actually has: the
-        # "installed 18 packages" banner is exactly the misleading-success case this
+        # "installed 20 packages" banner is exactly the misleading-success case this
         # verification exists for.
         Write-OutputDump -Label 'vipm install stdout from this run' -Text $installResult.StdOut -MaxLines 20
     }

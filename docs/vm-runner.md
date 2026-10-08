@@ -43,7 +43,7 @@ CI (the Linux runner) keeps doing only LabVIEW-free static verification.
     └─ VM hypervisor: VMware Workstation 17 + WHP, or Hyper-V  │  ├─ LabVIEW 2026 + AB       │
                                                                │  ├─ NI runtimes ×4 + VIPM   │
                                                                │  ├─ Node.js ≥ 20            │
-                                                               │  ├─ 18 VIPM dependencies    │
+                                                               │  ├─ 20 VIPM dependencies    │
                                                                │  └─ gitea-runner (scheduled │
                                                                │     task, auto-start)       │
                                                                └─────────────────────────────┘
@@ -201,9 +201,9 @@ Test-NetConnection gitea.sevenology.top -Port 443
      node --version   # expect v20.x or higher (repo minimum 18+, Lane 3 workflow expects ≥20)
      npm --version
      ```
-5. **The 18 VIPM dependencies**
+5. **The 20 VIPM dependencies**
    - The single source of truth is `[vipm.dependencies]` in the repo root's
-     `Lab_Super.dragon` (18 ids; list snapshot in `packages/VIPM Package List.txt`). The
+     `Lab_Super.dragon` (20 ids; list snapshot in `packages/VIPM Package List.txt`). The
      repo provides bootstrap script **`ci/bootstrap-deps.ps1`**:
      ```powershell
      # in the VM, get a working copy of the repo first (path of your choosing, e.g. C:\MICA)
@@ -214,7 +214,7 @@ Test-NetConnection gitea.sevenology.top -Port 443
    - The script ships with the repo (the first draft of this document predated its merge
      at HEAD `66a5a3d`; it is available now). It: asserts VIPM / LabVIEW / Node are in
      place → installs the dependencies → reconciles with `vipm list` and **requires all
-     18 ids to be present**, exiting non-zero and naming any missing one — so do not trust
+     20 ids to be present**, exiting non-zero and naming any missing one — so do not trust
      the install phase's "installed successfully" output alone.
    - If `vipm list --installed`'s real output format does not match the script's parsing
      expectations, the script **reports everything missing and never fakes green**
@@ -574,7 +574,7 @@ extra space (see section 9 cleanup).
 | --- | --- | --- | --- |
 | S0 | OS + Windows Update + VC++ installed | `S0-os-clean` | nothing |
 | S1 | LabVIEW + Application Builder + 4 NI runtimes + VIPM installed, **activation complete** | `S1-labview-licensed` | nothing (activation survives in the snapshot) |
-| S2 | 18 VIPM dependencies installed, `Launcher-Debug` compiles | `S2-deps-built` | nothing |
+| S2 | 20 VIPM dependencies installed, `Launcher-Debug` compiles | `S2-deps-built` | nothing |
 | S3 | **one before and one after runner registration**: before = `S3-pre-register`; after confirming Online + one successful build = `S4-registered-online` | `S3-pre-register` / `S4-registered-online` | After rolling back to S3: `.runner` may be missing or stale → re-register with `-Force`; a same-name offline entry may appear in the Gitea UI, delete as needed |
 
 Discipline:
@@ -620,7 +620,7 @@ Discipline:
 | runner offline **and the process is gone** (log ends on `fail to invoke Declare`) | is the binary still in `listProcessesInGuest` / `tasklist`? | the daemon can exit rather than retry - start its **own scheduled task** (7.3) instead of waiting; see 7.5 for why waiting recovers nothing |
 | guest resolves nothing, DNS times out, but the NAT service says `Running` | who owns UDP 53 on the host: `Get-NetUDPEndpoint -LocalPort 53` then `tasklist /svc /fi "PID eq <pid>"` | a second service that grabbed port 53 first at boot prevents the NAT DNS proxy from binding. Either give the guest a resolver that is reachable *through* NAT, or free the port - see 7.5 |
 | job stuck queued | labels on the Gitea Runners page | confirm the label is exactly `windows-labview26:host` and the runner is Online |
-| build failed | Actions run page (step logs); `.ci-logs/` (per-spec `labview.ps1` logs and version/integrity reports, uploaded as artifact by the workflow) | first reproduce the same step locally (`docs/ci.md` has verbatim commands) |
+| build failed | Actions run page (step logs — the per-spec `labview.ps1` logs and version/integrity reports are printed to the **job log**, nothing is uploaded as an artifact); `.ci-logs/` in the runner's repo working copy holds the same files on disk (the workflow itself never runs the bootstrap: runner provisioning is out of band, see the LabVIEW-CI kit README) | first reproduce the same step locally (`docs/ci.md` has verbatim commands) |
 | exit code 3 (port held) | who is listening on the port | close the LabVIEW GUI / leftover process in the VM: `Get-NetTCPConnection -State Listen -LocalPort 3364` → `taskkill /IM LabVIEW.exe` |
 | "server.tcp.port not configured" | the VM's `LabVIEW.ini` | set 3364 as above (changing the port in the GUI writes it automatically) |
 | registration failed (exit code 3) | the printed `[register]` output | token expired / instance unreachable / invalid label; fetch a fresh token in the UI and rerun (idempotent) |
