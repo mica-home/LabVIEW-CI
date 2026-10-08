@@ -1,0 +1,5 @@
+*.env
+.omz/
+node_modules/
+.ci-logs/
+dist/

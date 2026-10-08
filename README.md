@@ -1,0 +1,79 @@
+# LabVIEW-CI
+
+Provisioning toolkit for the Windows Gitea Actions runner that builds the MICA LabVIEW
+project. It was extracted from the MICA repository so that runner provisioning is managed
+as its own project: MICA keeps only the files its pipelines need, and everything about
+building, registering and feeding a Windows build VM lives here.
+
+## Layout
+
+| Path | Purpose |
+| --- | --- |
+| `ci/bootstrap-deps.ps1` | Installs and asserts the VIPM dependency set declared in the dragon file (idempotent; `-VerifyOnly` performs a read-only reconciliation). |
+| `ci/runner/vm-bootstrap.ps1` | One-file bootstrap for a fresh Windows build VM: preflight report -> Node.js -> Gitea runner registration -> dependency bootstrap (four phases, re-runnable at any point). |
+| `ci/runner/setup-runner.ps1` | Registers a Gitea Actions runner on a host whose dependencies are already installed (binary download, `config.yaml` rendering, registration, optional scheduled task). |
+| `ci/runner/host-vm-autostart.ps1` | Optional: starts the encrypted build VM when the host boots; designed to run as a SYSTEM scheduled task. Reads its parameters from `ci/vm.env`. |
+| `ci/tests/` | PowerShell test suites for the scripts above, with local stand-ins under `ci/tests/fixtures/` (no network, no real VIPM, no real Task Scheduler). |
+| `ci/vm.env.example` | Template for `ci/vm.env`. |
+| `docs/ci.md` | The MICA project's CI/CD manual (lane overview, releases, credentials, troubleshooting). |
+| `docs/vm-runner.md` | The VM and runner operations manual (specs, install checklist, one-shot bootstrap, registration, snapshots, decommissioning). |
+| `Lab_Super.dragon` | Reference copy of the pinned dependency list (VIPM/NIPM). The test suites read it, and a standalone `bootstrap-deps.ps1` run uses it by default. |
+
+## Using the kit
+
+On a fresh Windows host (the build VM), the documented one-liner is:
+
+```powershell
+pwsh -NoProfile -File ci/runner/vm-bootstrap.ps1
+```
+
+It prints a preflight report (host, disks, Node, LabVIEW, VIPM, manual-install
+checklist), installs Node.js when missing, downloads and registers the Gitea runner
+(the registration token is prompted for and never written to disk), and then bootstraps
+the VIPM dependencies. `docs/vm-runner.md` section 7.0 is the full runbook.
+
+On a host that already has its dependencies, register only the runner:
+
+```powershell
+pwsh -NoProfile -File ci/runner/setup-runner.ps1 -ServiceTask
+```
+
+The autostart helper is optional and is registered as a SYSTEM scheduled task; it starts
+the encrypted VM at host boot. `docs/vm-runner.md` section 7.4 describes host-side
+startup.
+
+## How the kit is consumed
+
+The runner is provisioned out of band, before any MICA workflow runs: MICA's workflows
+assume a runner that is already installed, registered and equipped, and the bootstrap is
+not executed from inside a MICA workflow.
+
+`vm-bootstrap.ps1` Phase 3 fetches the files it needs through the Gitea raw API with the
+same in-memory registration token: `ci/bootstrap-deps.ps1` and `Lab_Super.dragon` from
+the MICA repository (`MICA/MICA`, ref `dev`). `-RepoSlug` and `-Ref` select that source.
+When the raw fetch is not possible, the manual fallback is printed: copy those two files
+into the stage directory and re-run with `-SkipRunner`.
+
+## Credentials
+
+`ci/vm.env` is kept local to each machine and is never committed (`*.env` is ignored by
+`.gitignore`). `ci/vm.env.example` documents the keys. Registration tokens are passed to
+the runner through the environment and are never echoed or written to disk by these
+scripts.
+
+## Tests
+
+The suites are real (they launch the scripts as child processes with stand-in back ends),
+but they never touch the network or a real VIPM, Node install or Task Scheduler:
+
+```powershell
+pwsh -NoProfile -File ci/tests/vm-bootstrap.tests.ps1
+pwsh -NoProfile -File ci/tests/bootstrap-deps.tests.ps1
+pwsh -NoProfile -File ci/tests/setup-runner.tests.ps1
+```
+
+`ci/tests/fixtures/vipm-stub/`, `ci/tests/fixtures/runner-stub/` and
+`ci/tests/fixtures/api-stub.mjs` are the stand-ins. `vm-bootstrap.ps1` exposes test
+seams (`-RunnerBinaryPath`, `-NodeCommand`, `-WingetCommand`, `-TaskBackend`,
+`-DepsScript`) so the suites can run unattended; see `docs/vm-runner.md` for manual QA
+that needs a real VM.

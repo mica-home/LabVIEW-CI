@@ -1,0 +1,33 @@
+# Line endings are decided here, not by each clone's core.autocrlf.
+#
+# Why: the pipeline parses these files (Gitea reads the workflow YAML,
+# ci/tests/verify-workflow.check.mjs matches multi-line anchors, pwsh runs the
+# scripts). With core.autocrlf=true and no policy here, the same committed bytes
+# can check out as LF on one machine and CRLF on another, which makes a
+# content-neutral checkout look like a real difference.
+#
+# Every pattern below is content-neutral for this repository: the committed blobs
+# of these types are already LF-only, so pinning the working-tree style changes no
+# file content - it only stops git from rewriting them at checkout.
+#
+# LabVIEW payloads (.vi, .lvclass, .ctl, .lvproj, .lvlib) are deliberately NOT
+# listed: their stored line endings are already inconsistent between files, so any
+# renormalisation here would rewrite project content. Leave them to LabVIEW.
+
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.mjs    text eol=lf
+*.js     text eol=lf
+*.json   text eol=lf
+*.md     text eol=lf
+*.txt    text eol=lf
+*.toml   text eol=lf
+*.ini    text eol=lf
+*.ps1    text eol=lf
+.gitignore text eol=lf
+
+# Batch files are pinned to LF, not CRLF: the one .cmd this pipeline runs
+# (ci/tests/fixtures/LabVIEWCLI-stub.cmd) is LF in the working tree today and the
+# suites pass against it, so this records the proven state instead of guessing at
+# a cmd.exe quirk that has not shown up here.
+*.cmd    text eol=lf
