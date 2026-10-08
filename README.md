@@ -49,10 +49,12 @@ assume a runner that is already installed, registered and equipped, and the boot
 not executed from inside a MICA workflow.
 
 `vm-bootstrap.ps1` Phase 3 fetches the files it needs through the Gitea raw API with the
-same in-memory registration token: `ci/bootstrap-deps.ps1` and `Lab_Super.dragon` from
-the MICA repository (`MICA/MICA`, ref `dev`). `-RepoSlug` and `-Ref` select that source.
-When the raw fetch is not possible, the manual fallback is printed: copy those two files
-into the stage directory and re-run with `-SkipRunner`.
+same in-memory registration token, each from its own home: `ci/bootstrap-deps.ps1` from
+this repository (`MICA/LabVIEW-CI`, ref `main` - `-KitRepoSlug`/`-KitRef`) and
+`Lab_Super.dragon` from the MICA repository (`MICA/MICA`, ref `dev` - `-RepoSlug`/`-Ref`,
+which also remain the runner registration target). When the raw fetch is not possible, the
+manual fallback is printed: copy both files into the stage directory and re-run with
+`-SkipRunner`.
 
 ## Credentials
 

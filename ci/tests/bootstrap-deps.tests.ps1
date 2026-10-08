@@ -362,7 +362,9 @@ try {
         Assert-Equal 1 $installLines.Count 'exactly one install invocation expected'
         $installArgv = Get-ArgvPart -LogLine $installLines[0]
         Assert-Match $installArgv '^install -y --labview-version 2026 --timeout 3600 --color-mode never ' 'the install argv must follow the documented shape'
-        Assert-Match $installArgv ([regex]::Escape($RealDragon) + '$') 'the dragon path must be the last install argument (absolute)'
+        $vipmSafeCopy = Join-Path (Join-Path $env:TEMP 'vipm-public-cwd') 'Lab_Super.dragon'
+        Assert-Match $installArgv ([regex]::Escape($vipmSafeCopy) + '$') 'the install must run from the public-repo copy of the dragon (-VipmSafeRemote)'
+        Assert-Equal (Get-FileHash -LiteralPath $RealDragon -Algorithm SHA256).Hash (Get-FileHash -LiteralPath $vipmSafeCopy -Algorithm SHA256).Hash 'the public-repo copy must be byte-identical to the dragon under test'
         Assert-NotMatch $installArgv '--vipm' 'the VIPM-only switch must stay off without -SkipNipm'
         Assert-NotMatch $installArgv '--json' 'the experimental --json flag must not be used for install'
 
@@ -611,7 +613,9 @@ vipc = ""
         Assert-Match $r.Output 'OK - 2 vipm package ids declared' 'the parser must count exactly the [vipm.dependencies] entries'
         Assert-Match $r.Output 'OK: all 2 VIPM package ids' 'both ids must be matched against the JSON-shaped listing'
         $installArgv = Get-ArgvPart -LogLine (@(Get-InstallLines -LogPath $env.ArgvLog))[0]
-        Assert-Match $installArgv ([regex]::Escape($dragon) + '$') 'the variant dragon path must be forwarded'
+        $vipmSafeCopy = Join-Path (Join-Path $env:TEMP 'vipm-public-cwd') 'Lab_Super.dragon'
+        Assert-Match $installArgv ([regex]::Escape($vipmSafeCopy) + '$') 'the install must run from the public-repo copy of the variant dragon (-VipmSafeRemote)'
+        Assert-Equal (Get-FileHash -LiteralPath $dragon -Algorithm SHA256).Hash (Get-FileHash -LiteralPath $vipmSafeCopy -Algorithm SHA256).Hash 'the public-repo copy must be byte-identical to the variant dragon'
         Write-Evidence 'quoted keys + inline comments + [vipm.feeds]/[vipm] noise parsed as 2 ids; JSON listing verified'
     }
 

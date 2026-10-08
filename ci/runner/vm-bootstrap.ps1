@@ -27,11 +27,13 @@
                passed to the runner ONLY through the environment variable
                GITEA_RUNNER_REGISTRATION_TOKEN: never on the command line, never written to
                a file, never echoed (every child output line is redacted first).
-      Phase 3  dependencies. Fetch ci/bootstrap-deps.ps1 and Lab_Super.dragon from the
-               Gitea raw API with the same in-memory token into <StageDir>, then run
-               bootstrap-deps.ps1 -DragonFile <StageDir>\Lab_Super.dragon with the operator
-               parameters passed through. The four NI runtimes are installed by hand per the
-               Phase 0 checklist, so the child runs with -SkipNipm unless -WithNipm is given.
+      Phase 3  dependencies. Fetch ci/bootstrap-deps.ps1 from the kit repository (this one:
+               -KitRepoSlug/-KitRef) and Lab_Super.dragon from the MICA repository
+               (-RepoSlug/-Ref) through the Gitea raw API with the same in-memory token into
+               <StageDir>, then run bootstrap-deps.ps1 -DragonFile <StageDir>\Lab_Super.dragon
+               with the operator parameters passed through. The four NI runtimes are installed
+               by hand per the Phase 0 checklist, so the child runs with -SkipNipm unless
+               -WithNipm is given.
 
     Idempotency / resumability:
       * every phase writes a marker in <StageDir> (.phase1-node.done, .phase2-runner.done,
@@ -49,7 +51,7 @@
 
     Exit codes:
       0  every active phase finished
-      2  usage/config error: bad -InstanceUrl/-RepoSlug/-Ref/-Name/-Labels/-Capacity/-RunnerRoot
+      2  usage/config error: bad -InstanceUrl/-RepoSlug/-Ref/-KitRepoSlug/-KitRef/-Name/-Labels/-Capacity/-RunnerRoot
          (or a path inside a git repository), missing -RunnerBinaryPath, bad timeout value,
          or a required registration token that could not be obtained
       3  Phase 3: the raw files could not be fetched (401 = token rejected, 404 = wrong
@@ -84,7 +86,7 @@
     pwsh -NoProfile -File vm-bootstrap.ps1 -RunnerBinaryPath D:\gitea-runner\gitea-runner.exe
 
 .EXAMPLE
-    # fetch failed? copy the two repository files into the stage dir and re-run:
+    # fetch failed? copy the kit file and the dragon into the stage dir and re-run:
     pwsh -NoProfile -File vm-bootstrap.ps1 -SkipRunner
 #>
 [CmdletBinding()]
@@ -92,6 +94,13 @@ param(
     [string]$InstanceUrl = 'https://gitea.sevenology.top',
     [string]$RepoSlug = 'MICA/MICA',
     [string]$Ref = 'dev',
+
+    # Source of the kit file itself (ci/bootstrap-deps.ps1): this repository, so the kit can
+    # be provisioned from its own home. -RepoSlug/-Ref stay the MICA source of the dragon
+    # file; the runner registration target is still -RepoSlug/-Ref.
+    [string]$KitRepoSlug = 'MICA/LabVIEW-CI',
+    [string]$KitRef = 'main',
+
     [string]$RunnerRoot = 'D:\gitea-runner',
     [string]$StageDir = 'D:\mica-bootstrap',
     [string]$Name = $env:COMPUTERNAME,
@@ -183,6 +192,7 @@ function Stop-Usage {
     Write-Host ''
     Write-Host 'usage:'
     Write-Host '  pwsh -File ci/runner/vm-bootstrap.ps1 [-InstanceUrl <url>] [-RepoSlug <owner/repo>] [-Ref <branch|tag>]'
+    Write-Host '       [-KitRepoSlug <owner/repo>] [-KitRef <branch|tag>]   (source of ci/bootstrap-deps.ps1; default MICA/LabVIEW-CI@main)'
     Write-Host '       [-RunnerRoot <dir>] [-StageDir <dir>] [-Name <runner name>] [-Labels <l>] [-Capacity <n>]'
     Write-Host '       [-RegistrationToken <t> | env GITEA_RUNNER_REGISTRATION_TOKEN | interactive prompt]'
     Write-Host '       [-RunnerBinaryPath <local gitea-runner>] [-SkipNode] [-SkipRunner] [-SkipDeps] [-Force]'
@@ -640,8 +650,14 @@ $InstanceUrlNormalized = $InstanceUrl.TrimEnd('/')
 if ($RepoSlug -notmatch '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') {
     Stop-Usage ('invalid -RepoSlug: "' + $RepoSlug + '". Expected owner/repo form, e.g. MICA/MICA.')
 }
+if ($KitRepoSlug -notmatch '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') {
+    Stop-Usage ('invalid -KitRepoSlug: "' + $KitRepoSlug + '". Expected owner/repo form, e.g. MICA/LabVIEW-CI.')
+}
 if ([string]::IsNullOrWhiteSpace($Ref) -or $Ref -match '[\s?#]') {
     Stop-Usage ('invalid -Ref: "' + $Ref + '". Expected a branch or tag name (no whitespace, ?, #).')
+}
+if ([string]::IsNullOrWhiteSpace($KitRef) -or $KitRef -match '[\s?#]') {
+    Stop-Usage ('invalid -KitRef: "' + $KitRef + '". Expected a branch or tag name (no whitespace, ?, #).')
 }
 foreach ($t in @(
         [pscustomobject]@{ Name = '-WingetTimeoutSec'; Value = $WingetTimeoutSec },
@@ -734,6 +750,7 @@ $skipRunnerPhase = $SkipRunner
 $skipDepsPhase = $SkipDeps
 
 Write-Log ('instance      : ' + $InstanceUrlNormalized + ' (repo ' + $RepoSlug + ', ref ' + $Ref + ')')
+Write-Log ('kit source    : ' + $KitRepoSlug + ' (ref ' + $KitRef + ') for ci/bootstrap-deps.ps1; dragon from ' + $RepoSlug + ' (ref ' + $Ref + ')')
 Write-Log ('runner root  : ' + $RunnerRootFull)
 Write-Log ('stage dir    : ' + $StageDirFull)
 Write-Log ('runner name  : ' + $Name)
@@ -819,6 +836,8 @@ $preflight = [ordered]@{
         instanceUrl   = $InstanceUrlNormalized
         repoSlug      = $RepoSlug
         ref           = $Ref
+        kitRepoSlug   = $KitRepoSlug
+        kitRef        = $KitRef
         runnerRoot    = $RunnerRootFull
         stageDir      = $StageDirFull
         runnerName    = $Name
@@ -1223,13 +1242,13 @@ else {
     }
     elseif ($Force -or -not ((Test-Path -LiteralPath $depsScriptPath -PathType Leaf) -and (Test-Path -LiteralPath $dragonPath -PathType Leaf))) {
         $rawFiles = @(
-            [pscustomobject]@{ RepoPath = 'ci/bootstrap-deps.ps1'; Dest = $depsScriptPath },
-            [pscustomobject]@{ RepoPath = 'Lab_Super.dragon'; Dest = $dragonPath }
+            [pscustomobject]@{ RepoPath = 'ci/bootstrap-deps.ps1'; Dest = $depsScriptPath; RepoSlug = $KitRepoSlug; Ref = $KitRef; SourceHint = '-KitRepoSlug/-KitRef' },
+            [pscustomobject]@{ RepoPath = 'Lab_Super.dragon'; Dest = $dragonPath; RepoSlug = $RepoSlug; Ref = $Ref; SourceHint = '-RepoSlug/-Ref' }
         )
         if ($Force) { Write-Log '-Force: ignoring files already in the stage dir; downloading again.' }
         Write-Log ('fetching files from the Gitea raw API (timeout budget ' + $DownloadTimeoutSec + ' s per file; the token travels only in the Authorization header):')
         foreach ($f in $rawFiles) {
-            $url = $InstanceUrlNormalized + '/api/v1/repos/' + $RepoSlug + '/raw/' + $f.RepoPath + '?ref=' + [Uri]::EscapeDataString($Ref)
+            $url = $InstanceUrlNormalized + '/api/v1/repos/' + $f.RepoSlug + '/raw/' + $f.RepoPath + '?ref=' + [Uri]::EscapeDataString($f.Ref)
             Write-Log ('  GET ' + $url)
             $status = 0
             try {
@@ -1240,16 +1259,16 @@ else {
                 if (Test-Path -LiteralPath $f.Dest) { Remove-Item -LiteralPath $f.Dest -Force -ErrorAction SilentlyContinue }
                 $why = 'network/timeout failure'
                 if ($status -eq 401) { $why = 'HTTP 401: token invalid, expired, or not valid for this repo' }
-                elseif ($status -eq 404) { $why = 'HTTP 404: repo/ref/path does not exist (check -RepoSlug and -Ref)' }
+                elseif ($status -eq 404) { $why = 'HTTP 404: repo/ref/path does not exist (check ' + $f.SourceHint + ' for ' + $f.RepoPath + ')' }
                 elseif ($status -gt 0) { $why = 'HTTP ' + $status }
                 Write-Err ('fetch failed: ' + $f.RepoPath + ' -> ' + $why + ' (' + $_.Exception.Message + ')')
                 Write-Hint @(
                     'manual fallback (recommended, no new token needed):',
-                    '  1) on a machine that can reach the repo, copy both files into ' + $StageDirFull + '\ (keep the file names):',
-                    '       ci/bootstrap-deps.ps1',
-                    '       Lab_Super.dragon',
+                    '  1) on a machine that can reach both repositories, copy these files into ' + $StageDirFull + '\ (keep the file names):',
+                    '       ci/bootstrap-deps.ps1   <- ' + $KitRepoSlug + ' (ref ' + $KitRef + ')',
+                    '       Lab_Super.dragon        <- ' + $RepoSlug + ' (ref ' + $Ref + ')',
                     '  2) rerun: pwsh -File vm-bootstrap.ps1 -SkipRunner   (the registered runner is skipped idempotently; Phase 3 uses the local files directly)',
-                    'or: retry with a valid token / corrected -InstanceUrl, -RepoSlug, -Ref.'
+                    'or: retry with a valid token / corrected -InstanceUrl and repository/ref parameters.'
                 )
                 exit $ExitFetch
             }

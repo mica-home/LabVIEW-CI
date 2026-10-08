@@ -15,8 +15,9 @@
       * Task Scheduler    -> a PowerShell backend stub (-TaskBackend) recording the
                              install/start/status/uninstall verbs
       * Gitea raw API     -> fixtures/api-stub.mjs with --raw-dir (the real
-                             ci/bootstrap-deps.ps1 and Lab_Super.dragon are served, so the
-                             Phase 3 child is the REAL script) and --raw-status 401/404
+                             ci/bootstrap-deps.ps1 is served under the kit slug and the real
+                             Lab_Super.dragon under the MICA slug, so the Phase 3 child is
+                             the REAL script) and --raw-status 401/404
       * VIPM              -> fixtures/vipm-stub (driven by the real bootstrap-deps.ps1)
 
     Nothing here touches gitea.sevenology.top, dl.gitea.com, a real VIPM, a real Node
@@ -29,8 +30,9 @@
                                and the manual-install checklist land in preflight.json
       T02 register-and-task    argv shape, config.yaml, .runner, SYSTEM/AtStartup task
                                verbs; the token sentinel appears in NO output and NO file
-      T03 phase3-raw-deps      both files fetched byte-identical through the raw route and
-                               the real bootstrap-deps.ps1 invoked with the staged dragon
+      T03 phase3-raw-deps      kit and dragon fetched byte-identical from their own repos
+                               through the raw route and the real bootstrap-deps.ps1 invoked
+                               with the staged dragon
       T04 idempotency-resume   second run skips both phases (1 register call, 2 fetches),
                                a missing phase marker resumes that phase, -Force redoes it
       T05 phase1-node          skip when >= 20; winget path + re-probe; winget failure ->
@@ -487,7 +489,7 @@ $SentinelSha = Get-StringSha256 -Text $Sentinel
 try {
     # ------------------------------------------------------------------ T01 -----
     Test-Case 'T01-preflight-report' 'Phase 0 probes (host, IPv4, OS, disks, node, LabVIEW, VIPM) land in preflight.json' {
-        Assert-Equal 18 $RealIds.Count 'test precondition: the repository dragon file declares 18 vipm ids'
+        Assert-Equal 20 $RealIds.Count 'test precondition: the repository dragon file declares 20 vipm ids (the tripwire count of the kit bootstrap-deps.ps1)'
         $sandbox = New-Sandbox 't01'
         $stage = Join-Path $sandbox 'stage'
         $root = Join-Path $sandbox 'runner-root'
@@ -643,13 +645,20 @@ try {
         Assert-Equal 2 $raw.Count 'exactly two raw file requests expected'
         Assert-Equal 'ci/bootstrap-deps.ps1' $raw[0].rawPath 'the first fetch must be the dependency script'
         Assert-Equal 'Lab_Super.dragon' $raw[1].rawPath 'the second fetch must be the dragon file'
-        Assert-Equal 'dev' $raw[0].ref 'the fetch must carry the requested ref'
+        Assert-Equal '/api/v1/repos/MICA/LabVIEW-CI/raw/ci/bootstrap-deps.ps1' $raw[0].path 'the dependency script must come from the kit repository'
+        Assert-Equal '/api/v1/repos/MICA/MICA/raw/Lab_Super.dragon' $raw[1].path 'the dragon must come from the MICA repository'
+        Assert-Equal 'main' $raw[0].ref 'the kit fetch must carry the kit ref (-KitRef)'
+        Assert-Equal 'dev' $raw[1].ref 'the dragon fetch must keep the MICA ref (-Ref)'
         Assert-Equal 'token' $raw[0].auth 'the fetch must authenticate with a token scheme'
         Assert-Equal $SentinelSha $raw[0].authSha256 'the fetch must use the same in-memory token (hash proof)'
 
         $install = @(Get-Lines -Path $deps.ArgvLog -Pattern 'argv: install ')
         Assert-Equal 1 $install.Count 'bootstrap-deps.ps1 must have invoked vipm install exactly once'
-        Assert-Match $install[0] ('argv: install -y --labview-version 2026 --vipm --timeout 3600 --color-mode never .*' + [regex]::Escape($stagedDragon)) 'vipm install must receive the staged dragon path'
+        Assert-Match $install[0] ('argv: install -y --labview-version 2026 --timeout 3600 --color-mode never .*') 'the install argv must follow the documented shape'
+        $vipmSafeCopy = Join-Path (Join-Path $env:TEMP 'vipm-public-cwd') 'Lab_Super.dragon'
+        Assert-Match $install[0] ([regex]::Escape($vipmSafeCopy) + '$') 'the install must run from the public-repo copy of the dragon (-VipmSafeRemote)'
+        Assert-Equal (Get-FileHash -LiteralPath $stagedDragon -Algorithm SHA256).Hash (Get-FileHash -LiteralPath $vipmSafeCopy -Algorithm SHA256).Hash 'the public-repo copy must be byte-identical to the staged dragon'
+        Assert-NotMatch $install[0] '--vipm' 'the --vipm filter must stay off for dragon inputs (vipm 2026.3.1 rejects it)'
         Assert-True (@(Get-Lines -Path $deps.ArgvLog -Pattern 'argv: list ').Count -ge 1) 'bootstrap-deps.ps1 must reconcile with vipm list'
         Write-Evidence ('vipm: ' + $install[0])
 
@@ -783,7 +792,7 @@ try {
         foreach ($variant in @(
                 [pscustomobject]@{ Tag = 't06-401'; Status = 401; Hang = ''; Expect = '401'; Extra = @() },
                 [pscustomobject]@{ Tag = 't06-404'; Status = 404; Hang = ''; Expect = '404'; Extra = @() },
-                [pscustomobject]@{ Tag = 't06-hang'; Status = 0; Hang = 'GET /api/v1/repos/MICA/MICA/raw/ci/bootstrap-deps.ps1'; Expect = 'fetch failed'; Extra = @('-DownloadTimeoutSec', '3') }
+                [pscustomobject]@{ Tag = 't06-hang'; Status = 0; Hang = 'GET /api/v1/repos/MICA/LabVIEW-CI/raw/ci/bootstrap-deps.ps1'; Expect = 'fetch failed'; Extra = @('-DownloadTimeoutSec', '3') }
             )) {
             $sandbox = New-Sandbox $variant.Tag
             $stage = Join-Path $sandbox 'stage'
@@ -996,7 +1005,9 @@ try {
         Assert-Equal 0 (@(Get-ApiRequests -LogPath $stub.Log -RawOnly)).Count 'no raw fetch may happen when the files are already staged'
         $install = @(Get-Lines -Path $deps.ArgvLog -Pattern 'argv: install ')
         Assert-Equal 1 $install.Count 'bootstrap-deps.ps1 must still install from the staged dragon'
-        Assert-Match $install[0] ([regex]::Escape((Join-Path $stage 'Lab_Super.dragon'))) 'the staged dragon path must reach vipm'
+        $vipmSafeCopy = Join-Path (Join-Path $env:TEMP 'vipm-public-cwd') 'Lab_Super.dragon'
+        Assert-Match $install[0] ([regex]::Escape($vipmSafeCopy) + '$') 'the install must run from the public-repo copy of the staged dragon'
+        Assert-Equal (Get-FileHash -LiteralPath (Join-Path $stage 'Lab_Super.dragon') -Algorithm SHA256).Hash (Get-FileHash -LiteralPath $vipmSafeCopy -Algorithm SHA256).Hash 'the public-repo copy must be byte-identical to the staged dragon'
         Assert-True (Test-Path -LiteralPath (Join-Path $stage '.phase3-deps.done') -PathType Leaf) 'the phase-3 marker must be written'
         Write-Evidence ('offline fallback: raw fetches=0, vipm install -> ' + $install[0])
     }
@@ -1032,7 +1043,9 @@ try {
         Assert-Match $taskLines[0] ([regex]::Escape('"' + (Join-Path $root 'config.yaml') + '"')) 'the task action must quote the spaced config path'
         $install = @(Get-Lines -Path $argvLog -Pattern 'argv: install ')
         Assert-True ($install.Count -ge 1) ('Phase 3 must have run bootstrap-deps.ps1; child output:' + "`n" + (Sanitize-Output $r.Output))
-        Assert-Match $install[0] ([regex]::Escape((Join-Path $stage 'Lab_Super.dragon'))) 'the spaced staged dragon path must reach vipm'
+        $vipmSafeCopy = Join-Path (Join-Path $env:TEMP 'vipm-public-cwd') 'Lab_Super.dragon'
+        Assert-Match $install[0] ([regex]::Escape($vipmSafeCopy) + '$') 'the spaced staged dragon must reach vipm through its public-repo copy'
+        Assert-Equal (Get-FileHash -LiteralPath (Join-Path $stage 'Lab_Super.dragon') -Algorithm SHA256).Hash (Get-FileHash -LiteralPath $vipmSafeCopy -Algorithm SHA256).Hash 'the public-repo copy must be byte-identical to the spaced staged dragon'
         Write-Evidence ('spaced root=' + $root + ' | vipm install -> ' + $install[0])
     }
 
