@@ -59,7 +59,10 @@ dragon from the repo root:
 pwsh -NoProfile -File ci/bootstrap-deps.ps1 -DragonFile runner-test-extras.dragon -ExpectedPackageCount 3 -SkipNipm -LabViewBitness 32
 ```
 
-Only test-running machines need this - the base provisioning above does not. Acceptance:
+Only test-running machines need this - the base provisioning above does not. The same
+`-350053` is also produced by a missing **UTF Toolkit** component (`ni-utf-labview-support`,
+a separate NI add-on) or by a LabVIEW CLI component that lags the LabVIEW core - both are
+independently versioned NIPM packages; see `docs/vm-runner.md` section 5.2. Acceptance:
 this command completes and writes the report (exit 0):
 
 ```powershell

@@ -248,13 +248,45 @@ pwsh -NoProfile -File ci/bootstrap-deps.ps1 -DragonFile runner-test-extras.drago
   ```powershell
   LabVIEWCLI -OperationName RunUnitTests -ProjectPath <repo>\Lab_Super.lvproj -JUnitReportPath utf-junit.xml
   ```
-  Without the extras, instead of a report `LabVIEWCLI` fails with **`-350053`**
-  ("missing or bad files / required modules or toolkits").
+  A missing extras trio shows up as **`-350053`** ("missing or bad files / required
+  modules or toolkits") — but two environment problems higher up the load chain produce
+  exactly the same code (missing UTF Toolkit, stale LabVIEW CLI component): check
+  section 5.2 before assuming the trio.
 - Operations: run from an **admin** shell at the repo root (VIPM writes a machine-wide
   install); the VM needs **outbound access to `vipm.io`** to resolve the packages; the
   VIPM Community-edition check ("must be used in a public repository") is handled by the
   script itself — it relocates the VIPM child process to a throwaway public-safe working
   directory, so no manual step is required. Re-running the command is idempotent.
+
+### 5.2 LabVIEW component pitfalls (separate packages, separate feeds)
+
+A `nipkg`-based LabVIEW **core** upgrade (e.g. 26.1 -> 26.3) does not upgrade every
+component the runner depends on: several are independently versioned NIPM packages with
+their own feeds, and a mixed install (old component + new core) fails in ways that look
+unrelated to versions. Two measured cases (2026-10-09):
+
+- **UTF Toolkit** — `ni-utf-labview-support` (+ `ni-labview-unit-test-framework-toolkit-lic`;
+  feed `https://download.ni.com/support/nipkg/products/ni-l/ni-labview-unit-test-framework-toolkit/26.3/released`).
+  The `RunUnitTests` operation hard-depends on `NI_UnitTestFramework.lvlib` from this
+  add-on: without it the operation cannot load and the CLI fails with **`-350053` in about
+  two seconds**, before any project work — the fast failure is the signature that
+  distinguishes "operation cannot load" from real test failures.
+- **LabVIEW CLI** — `ni-labview-command-line-interface-x86` (feed
+  `https://download.ni.com/support/nipkg/products/ni-l/ni-labview-command-line-interface-x86/26.3/released`).
+  A stale CLI component (26.1 against a 26.3 core) misbehaves across operations; verify
+  with `(Get-Item '<x86>\Shared\LabVIEW CLI\LabVIEWCLI.exe').VersionInfo.FileVersion` —
+  it must match the core's line (for example 26.3.0f551 on 26.3.x).
+
+Verify everything at once (expected: one line each, all on the core's version line):
+
+```powershell
+& '<NI Package Manager>\nipkg.exe' list-installed | Select-String 'utf|unit-test|command-line-interface'
+```
+
+Upgrade recipe for either package: `nipkg feed-add <feed-url>`, then
+`nipkg install <package-id> --accept-eulas` (pin the exact version,
+`nipkg install '<id>=<version>'`, if "already installed" is reported). Machine-wide, from
+an admin shell, with LabVIEW closed.
 
 ## 6. Licensing notes (important)
 
