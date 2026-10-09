@@ -276,22 +276,34 @@ function ConvertTo-CmdArgument {
 }
 
 # Returns a directory whose git origin remote is a PUBLIC repository (see the
-# -VipmSafeRemote param note), creating it on first use under TEMP. Returns '' when
-# git is unavailable; the caller then keeps the current working directory, which
-# reproduces the pre-fix behavior (the Community gate will reject private CWDs).
+# -VipmSafeRemote param note), creating it on first use under TEMP. A stale or partial
+# directory (e.g. an interrupted `git init` left a .git without HEAD, measured
+# 2026-10-09) is rebuilt instead of trusted. Returns '' when git is unavailable; the
+# caller then keeps the current working directory, which reproduces the pre-fix
+# behavior (the Community gate will reject private CWDs).
 function Ensure-VipmSafeCwd {
     param([string]$Remote)
     $dir = Join-Path $env:TEMP 'vipm-public-cwd'
-    try {
-        if (-not (Test-Path (Join-Path $dir '.git'))) {
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        try {
+            $hasHead = Test-Path (Join-Path $dir '.git\HEAD')
+            $configPath = Join-Path $dir '.git\config'
+            $remoteOk = (Test-Path $configPath) -and [bool](Select-String -LiteralPath $configPath -SimpleMatch ('url = ' + $Remote) -Quiet)
+            if ($hasHead -and $remoteOk) { return $dir }
+            # The directory is a throwaway gate fixture, never user data: rebuild it.
+            if (Test-Path $dir) {
+                Write-Info ('rebuilding stale vipm safe-cwd: ' + $dir)
+                Remove-Item -Recurse -Force $dir -ErrorAction Stop
+            }
             New-Item -ItemType Directory -Force -Path $dir | Out-Null
             git -C $dir init 2>$null | Out-Null
-            git -C $dir remote remove origin 2>$null | Out-Null
             git -C $dir remote add origin $Remote 2>$null | Out-Null
+            if (Test-Path (Join-Path $dir '.git\HEAD')) { return $dir }
         }
-        if (Test-Path (Join-Path $dir '.git')) { return $dir }
+        catch {
+            # retry once, then fall through to the degraded return below
+        }
     }
-    catch { }
     return ''
 }
 
