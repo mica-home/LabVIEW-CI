@@ -231,6 +231,31 @@ Test-NetConnection gitea.sevenology.top -Port 443
    `pwsh -NoProfile -File ci/package.ps1 -Version <X.Y.Z> -SkipVersionCheck` produces
    4 zips in `dist/` — the VM is then able to take jobs.
 
+### 5.1 Test-lane extras (UTF JUnit report)
+
+Machines that run the **test lane** (`RunUnitTests`, with the JUnit report written through
+the `utf` channel) need three more NI packages on top of the 20 VIPM dependencies of
+step 5: `ni_lib_utf_junit_report` (the report writer), `ni_lib_junit_results_api` and
+`ni_lib_simple_xml`. They are deliberately **not** in `Lab_Super.dragon` — they are the
+extras dragon beside it, installed with the same script:
+
+```powershell
+pwsh -NoProfile -File ci/bootstrap-deps.ps1 -DragonFile runner-test-extras.dragon -ExpectedPackageCount 3 -SkipNipm -LabViewBitness 32
+```
+
+- Only machines that run the test lane need this; the base provision (step 5) does not.
+- Acceptance (writes the report and exits 0):
+  ```powershell
+  LabVIEWCLI -OperationName RunUnitTests -ProjectPath <repo>\Lab_Super.lvproj -JUnitReportPath utf-junit.xml
+  ```
+  Without the extras, instead of a report `LabVIEWCLI` fails with **`-350053`**
+  ("missing or bad files / required modules or toolkits").
+- Operations: run from an **admin** shell at the repo root (VIPM writes a machine-wide
+  install); the VM needs **outbound access to `vipm.io`** to resolve the packages; the
+  VIPM Community-edition check ("must be used in a public repository") is handled by the
+  script itself — it relocates the VIPM child process to a throwaway public-safe working
+  directory, so no manual step is required. Re-running the command is idempotent.
+
 ## 6. Licensing notes (important)
 
 - LabVIEW inside the VM is a **separate activation**: it may consume a **second seat**, or

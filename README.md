@@ -22,6 +22,7 @@ instance - the two live on different forges by design.
 | `docs/ci.md` | The MICA project's CI/CD manual (lane overview, releases, credentials, troubleshooting). |
 | `docs/vm-runner.md` | The VM and runner operations manual (specs, install checklist, one-shot bootstrap, registration, snapshots, decommissioning). |
 | `Lab_Super.dragon` | Reference copy of the pinned dependency list (VIPM/NIPM). The test suites read it, and a standalone `bootstrap-deps.ps1` run uses it by default. |
+| `runner-test-extras.dragon` | Test-lane add-ons on top of the base dependency set (the NI UTF JUnit report trio). Needed only on machines that run `RunUnitTests`; see "Test-lane extras" below. |
 
 ## Using the kit
 
@@ -45,6 +46,25 @@ pwsh -NoProfile -File ci/runner/setup-runner.ps1 -ServiceTask
 The autostart helper is optional and is registered as a SYSTEM scheduled task; it starts
 the encrypted VM at host boot. `docs/vm-runner.md` section 7.4 describes host-side
 startup.
+
+## Test-lane extras (UTF JUnit report)
+
+Machines that run the **test lane** (`RunUnitTests`, with its JUnit report written through
+the `utf` channel) additionally need NI's UTF JUnit report add-ons, which are deliberately
+**not** part of `Lab_Super.dragon`. Without them `LabVIEWCLI` fails with **`-350053`**
+("missing or bad files / required modules or toolkits"). Install them with the extras
+dragon from the repo root:
+
+```powershell
+pwsh -NoProfile -File ci/bootstrap-deps.ps1 -DragonFile runner-test-extras.dragon -ExpectedPackageCount 3 -SkipNipm -LabViewBitness 32
+```
+
+Only test-running machines need this - the base provisioning above does not. Acceptance:
+this command completes and writes the report (exit 0):
+
+```powershell
+LabVIEWCLI -OperationName RunUnitTests -ProjectPath <repo>\Lab_Super.lvproj -JUnitReportPath utf-junit.xml
+```
 
 ## How the kit is consumed
 

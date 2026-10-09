@@ -1,0 +1,7 @@
+[project]
+labview-version = 2026
+
+[vipm.dependencies]
+ni_lib_utf_junit_report = "1.0.1.43"
+ni_lib_junit_results_api = "1.0.1.6"
+ni_lib_simple_xml = "1.0.0.4"
