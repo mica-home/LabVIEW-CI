@@ -254,10 +254,11 @@ Test-NetConnection gitea.sevenology.top -Port 443
 ### 7.0 One-shot bootstrap (recommended for first setup: `vm-bootstrap.ps1`)
 
 **`ci/runner/vm-bootstrap.ps1` is a single-file bootstrap package**: copy it into the VM
-(no repo clone, no credentials needed), run it once as administrator, paste the
-registration token when prompted, and it walks the whole chain "Node → runner registration
-online → dependency bootstrap". Everything else (the gitea-runner binary,
-`ci/bootstrap-deps.ps1`, `Lab_Super.dragon`) it downloads itself.
+(no repo clone, no pre-set credentials: the kit script is fetched from a public GitHub
+repository anonymously), run it once as administrator, paste the registration token when
+prompted, and it walks the whole chain "Node → runner registration online → dependency
+bootstrap". Everything else (the gitea-runner binary, `ci/bootstrap-deps.ps1`,
+`Lab_Super.dragon`) it downloads itself.
 
 ```powershell
 # in the VM, admin pwsh (copy the file to any directory, e.g. C:\vm-bootstrap.ps1)
@@ -283,7 +284,7 @@ Four phases (each prints progress; failure messages say what to do next):
 | 0 preflight (always runs) | hostname/all IPv4s/OS/admin/disk free (system + data drive)/`node --version`/LabVIEW & VIPM probes + **manual-install checklist** (LabVIEW 2026 Professional with Application Builder, 4 NI runtimes, VIPM, with expected paths) → writes `<StageDir>\preflight.json` | — |
 | 1 Node | skip if `node --version` ≥ 20; otherwise `winget install OpenJS.NodeJS.LTS --silent` (timeout 900s, session PATH refreshed and **re-verified** after install — the installer banner is not trusted) | 6 (with official MSI page / latest LTS directory; rerunnable) |
 | 2 runner | download/reuse gitea-runner (windows-amd64) → write `config.yaml` (`windows-labview26:host`, `capacity: 1`, `<RunnerRoot>\_work`) → register (token only via env var) → scheduled task `MicaGiteaRunner` (SYSTEM / AtStartup) → start immediately → **verify the process is really there** (poll `Get-Process`; the task reporting Running does not count) | 4 (binary download failed) / 5 (registration or auto-start failed) |
-| 3 deps | fetch `ci/bootstrap-deps.ps1` from the kit's home on GitHub (`mica-home/LabVIEW-CI@main`, contents API, `-GitHubToken`/env `GITHUB_TOKEN`; `-KitForge gitea` = legacy raw route) and `Lab_Super.dragon` from the MICA repository (`MICA/MICA@dev`, Gitea raw API, registration token) into `<StageDir>`, then run `bootstrap-deps.ps1 -DragonFile <StageDir>\Lab_Super.dragon` (NI runtimes are installed manually per the Phase 0 checklist, so `-SkipNipm` is the default; `-WithNipm` lets VIPM also handle the nipm entries in the dragon) | 2 (missing GitHub token) / 3 (401/404/network failure) / 7 (subscript non-zero exit) |
+| 3 deps | fetch `ci/bootstrap-deps.ps1` from the kit's home on GitHub (`mica-home/LabVIEW-CI@main`, contents API - public repository, so the fetch is **anonymous by default**; `-GitHubToken`/env `GITHUB_TOKEN` is optional (rate limits / private fork); `-KitForge gitea` = legacy raw route) and `Lab_Super.dragon` from the MICA repository (`MICA/MICA@dev`, Gitea raw API, registration token) into `<StageDir>`, then run `bootstrap-deps.ps1 -DragonFile <StageDir>\Lab_Super.dragon` (NI runtimes are installed manually per the Phase 0 checklist, so `-SkipNipm` is the default; `-WithNipm` lets VIPM also handle the nipm entries in the dragon) | 3 (401 token rejected / 403 rate-limited / 404 wrong repo-ref-path or non-public without token / network failure) / 7 (subscript non-zero exit) |
 
 - **Idempotent / resumable**: each phase writes a marker `<StageDir>\.phase1-node.done` /
   `.phase2-runner.done` / `.phase3-deps.done` on success; reruns skip completed phases;
@@ -303,10 +304,10 @@ Four phases (each prints progress; failure messages say what to do next):
   `-SkipDeps` / `-Force`, `-TaskUserId` (default `SYSTEM`; change to the current user if
   the LabVIEW build needs an interactive session). Full parameters and exit codes in the
   script header comment.
-- Exit codes at a glance: `0` success; `2` usage/config error (missing token, invalid
-  URL/name/label/capacity); `3` Phase 3 file fetch failed; `4` runner binary download
-  failed; `5` registration or auto-start failed; `6` Node install failed; `7` dependency
-  bootstrap failed.
+- Exit codes at a glance: `0` success; `2` usage/config error (missing registration token,
+  invalid URL/name/label/capacity); `3` Phase 3 file fetch failed; `4` runner binary
+  download failed; `5` registration or auto-start failed; `6` Node install failed; `7`
+  dependency bootstrap failed. The GitHub kit fetch itself needs no token (public repo).
 - **Offline machines**: manually download the windows-amd64 gitea-runner and the Node LTS
   MSI, install both, then `-RunnerBinaryPath <dir>\gitea-runner.exe`; pre-place files for
   Phase 3 per the manual fallback above.

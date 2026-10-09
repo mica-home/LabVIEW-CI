@@ -5,7 +5,7 @@ project. It was extracted from the MICA repository so that runner provisioning i
 as its own project: MICA keeps only the files its pipelines need, and everything about
 building, registering and feeding a Windows build VM lives here.
 
-This repository's home is **`mica-home/LabVIEW-CI` on GitHub (private)**; it has no Gitea
+This repository's home is **`mica-home/LabVIEW-CI` on GitHub (public)**; it has no Gitea
 mirror today. The runner it provisions is still a Gitea Actions runner for the MICA
 instance - the two live on different forges by design.
 
@@ -54,14 +54,15 @@ not executed from inside a MICA workflow.
 
 `vm-bootstrap.ps1` Phase 3 fetches each file from its own home: `ci/bootstrap-deps.ps1`
 from this repository through the **GitHub contents API** (`mica-home/LabVIEW-CI`, ref
-`main` - `-KitRepoSlug`/`-KitRef`, `-KitForge github` is the default) authenticated with a
-GitHub token (`-GitHubToken` or env `GITHUB_TOKEN` - a private repository answers 401/404
-without one), and `Lab_Super.dragon` from the MICA repository (`MICA/MICA`, ref `dev` -
-`-RepoSlug`/`-Ref`, which also remain the runner registration target) through the **Gitea
-raw API** with the runner registration token. `-KitForge gitea` switches the kit fetch back
-to the legacy Gitea raw route (for a future Gitea mirror of this kit). When a fetch is not
-possible, the manual fallback is printed: copy both files into the stage directory and
-re-run with `-SkipRunner`.
+`main` - `-KitRepoSlug`/`-KitRef`, `-KitForge github` is the default). This repository is
+public, so the kit fetch is **anonymous by default** and needs no credential; a GitHub
+token (`-GitHubToken` or env `GITHUB_TOKEN`) is optional and adds an `Authorization:
+Bearer` header for higher rate limits (or for a private fork). `Lab_Super.dragon` comes from
+the MICA repository (`MICA/MICA`, ref `dev` - `-RepoSlug`/`-Ref`, which also remain the
+runner registration target) through the **Gitea raw API** with the runner registration
+token. `-KitForge gitea` switches the kit fetch back to the legacy Gitea raw route (for a
+future Gitea mirror of this kit). When a fetch is not possible, the manual fallback is
+printed: copy both files into the stage directory and re-run with `-SkipRunner`.
 
 ## Credentials
 
@@ -70,13 +71,13 @@ re-run with `-SkipRunner`.
 the runner through the environment and are never echoed or written to disk by these
 scripts.
 
-The kit fetch needs its own GitHub credential because `mica-home/LabVIEW-CI` is private:
-a fine-grained PAT with read access to that repository (or a classic PAT with the `repo`
-scope), supplied as `-GitHubToken` or the `GITHUB_TOKEN` environment variable. It travels
-only in the `Authorization: Bearer` header of the contents request; without it the script
-refuses up front (usage error, exit 2) instead of failing Phase 3 with a 401/404. The
-`GITEA_RUNNER_REGISTRATION_TOKEN` and `GITHUB_TOKEN` are separate credentials for separate
-forges and are not interchangeable.
+The kit fetch needs no credential: `mica-home/LabVIEW-CI` is public, so the contents
+request is sent anonymously unless a token is supplied. `-GitHubToken` (or the
+`GITHUB_TOKEN` environment variable) is **optional** - a fine-grained PAT with read access
+to that repository (or a classic PAT with the `repo` scope) lifts the anonymous rate limit,
+and a token is required only for a private fork. When supplied it travels only in the
+`Authorization: Bearer` header of the contents request. The `GITEA_RUNNER_REGISTRATION_TOKEN`
+and `GITHUB_TOKEN` are separate credentials for separate forges and are not interchangeable.
 
 ## Tests
 
